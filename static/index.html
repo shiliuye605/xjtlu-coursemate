@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>西浦课件通 · XJTLU CourseMate</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2324337E'/%3E%3Cpath d='M14 18 L32 34 L50 18 M14 46 L32 30 L50 46' stroke='%238B6BF2' stroke-width='6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/css/style.css?v=7">
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand">
+    <div class="logo">
+      <svg viewBox="0 0 64 64" width="22" height="22"><path d="M14 18 L32 34 L50 18 M14 46 L32 30 L50 46" stroke="#fff" stroke-width="7" fill="none" stroke-linecap="round"/></svg>
+    </div>
+    <div class="brand-text">
+      <h1>西浦课件通</h1>
+      <span>XJTLU CourseMate · Bilingual Learning Platform</span>
+    </div>
+  </div>
+  <nav id="tabs">
+    <button class="tab active" data-tab="translate">课件翻译<small>Translate</small></button>
+    <button class="tab" data-tab="chat">AI 助教<small>AI Tutor</small></button>
+    <button class="tab" data-tab="summary">课程总结<small>Summary</small></button>
+    <button class="tab" data-tab="settings">设置<small>Settings</small></button>
+  </nav>
+  <div id="api-chip" class="chip warn" title="点击进入设置">
+    <span class="dot"></span><span id="api-chip-text">检测中…</span>
+  </div>
+</header>
+
+<div id="layout">
+  <aside id="sidebar">
+    <div class="side-head">
+      <span>我的课程 <em>My Courses</em></span>
+      <button id="btn-add-course" class="icon-btn" title="新建课程">＋</button>
+    </div>
+    <ul id="course-list"></ul>
+    <div class="side-foot">
+      <div class="foot-line">🔒 数据与 API Key 仅存于本机</div>
+      <div class="foot-line muted">Sustainable · Local-first</div>
+    </div>
+  </aside>
+
+  <main id="main">
+
+    <!-- ========== 课件翻译 ========== -->
+    <section id="tab-translate" class="tab-page active">
+      <div id="doc-empty" class="empty-state hidden">
+        <div class="empty-icon">📚</div>
+        <h3>开始你的第一份双课件学习</h3>
+        <p>上传英文课件 PDF，AI 将生成保留原版排版的中文对照版本</p>
+        <div class="empty-actions">
+          <label class="btn primary" for="file-input">上传课件 PDF</label>
+          <button id="btn-load-sample" class="btn">载入内置示例课件</button>
+        </div>
+      </div>
+
+      <div id="doc-work" class="hidden">
+        <div class="panel-head">
+          <div class="panel-title">
+            <h2 id="doc-title">—</h2>
+            <p id="doc-meta"></p>
+          </div>
+          <div class="panel-actions">
+            <label class="btn primary" for="file-input">＋ 上传课件</label>
+            <input id="file-input" type="file" accept="application/pdf" hidden>
+            <button id="btn-translate" class="btn">开始翻译</button>
+            <button id="btn-del-doc" class="btn ghost danger">删除</button>
+          </div>
+        </div>
+
+        <div id="doc-strip"></div>
+
+        <div id="progress-wrap" class="hidden">
+          <div class="progress-info"><span id="progress-text">准备中…</span><span id="progress-pct">0%</span></div>
+          <div class="bar"><div id="progress-bar"></div></div>
+        </div>
+
+        <div id="split">
+          <div class="viewer-col">
+            <div class="col-head">
+              <span class="col-tag blue">EN</span><b>英文原版</b><span class="col-sub">Original</span>
+              <span id="page-ind-left" class="page-ind"></span>
+            </div>
+            <div class="viewer" id="viewer-left"></div>
+          </div>
+          <div class="viewer-col">
+            <div class="col-head">
+              <span class="col-tag purple">中</span><b>中文对照 · AI 译制版</b><span class="col-sub">AI Translated</span>
+              <span id="page-ind-right" class="page-ind"></span>
+            </div>
+            <div class="viewer" id="viewer-right"></div>
+            <div id="right-placeholder" class="viewer-placeholder hidden">
+              <div class="ph-icon">🀄</div>
+              <p id="right-placeholder-text">翻译完成后，这里将显示保留原排版的中文对照 PDF</p>
+            </div>
+          </div>
+        </div>
+
+        <div id="tutor-panel" class="card hidden">
+          <div class="col-head" id="tutor-head" title="点击展开 / 收起">
+            <span class="col-tag purple">📘</span><b>AI 辅导分析</b><span class="col-sub">IMIS Course Tutor</span>
+            <span id="tutor-badge" class="badge hidden"></span>
+            <span id="tutor-arrow" class="tutor-arrow">▾</span>
+            <button id="btn-tutor-retry" class="btn ghost hidden" style="margin-left:auto">⟳ 重新生成</button>
+          </div>
+          <div id="tutor-status" class="hint tutor-status"></div>
+          <div id="tutor-md" class="md-render tutor-md"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== AI 助教 ========== -->
+    <section id="tab-chat" class="tab-page">
+      <div class="chat-layout">
+        <div class="chat-side">
+          <div class="card-pad">
+            <h4>提问范围 <em>Context</em></h4>
+            <select id="chat-context"></select>
+            <p class="hint">选择"整门课程"时，AI 将参考最近 3 份课件的文本内容作答。</p>
+            <div class="tip-card">
+              <b>试试这样问</b>
+              <ul>
+                <li>用通俗语言解释一下 ACID 原则？</li>
+                <li>帮我出 5 道基于本课件的复习题</li>
+                <li>对比一下 B2B 与 B2C 模式的差异</li>
+              </ul>
+            </div>
+            <button id="btn-clear-chat" class="btn ghost danger full">清空对话记录</button>
+          </div>
+        </div>
+        <div class="chat-main card">
+          <div id="chat-messages">
+            <div class="chat-welcome">
+              <div class="empty-icon">🎓</div>
+              <h3>AI 课程助教</h3>
+              <p>基于你上传的课件内容答疑解惑，支持 DeepSeek / GLM / OpenAI / Kimi 等模型（自带 API Key）</p>
+            </div>
+          </div>
+          <div class="chat-input-row">
+            <textarea id="chat-text" rows="1" placeholder="输入问题，Enter 发送 / Shift+Enter 换行"></textarea>
+            <button id="btn-send" class="btn primary">发送</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== 课程总结 ========== -->
+    <section id="tab-summary" class="tab-page">
+      <div class="panel-head">
+        <div class="panel-title">
+          <h2>课程总结 <span class="en-sub">Course Summary</span></h2>
+          <p id="summary-meta">把整门课程的课件沉淀为一份持续更新的复习文档</p>
+        </div>
+        <div class="panel-actions">
+          <span id="summary-pending" class="badge warn hidden"></span>
+          <button id="btn-summary-update" class="btn primary">✦ 更新总结</button>
+          <a id="btn-summary-download" class="btn hidden" download>⬇ 下载 PDF</a>
+        </div>
+      </div>
+      <div id="summary-body" class="summary-grid">
+        <div class="summary-left card">
+          <div class="col-head"><b>智能总结</b><span class="col-sub">Markdown</span></div>
+          <div id="summary-md" class="md-render"><div class="chat-welcome"><p>上传并翻译课件后，点击「更新总结」即可生成。</p></div></div>
+        </div>
+        <div class="summary-right card">
+          <div class="col-head"><b>PDF 预览</b><span class="col-sub">Live Preview</span></div>
+          <div class="viewer" id="viewer-summary"></div>
+          <div id="summary-pdf-empty" class="viewer-placeholder">
+            <div class="ph-icon">📄</div><p>总结 PDF 将在此实时预览</p>
+          </div>
+        </div>
+      </div>
+      <div id="summary-history" class="history-strip"></div>
+    </section>
+
+    <!-- ========== 设置 ========== -->
+    <section id="tab-settings" class="tab-page">
+      <div class="settings-grid">
+        <div class="card card-pad">
+          <h3>模型服务 <span class="en-sub">BYOK · Bring Your Own Key</span></h3>
+          <p class="hint">使用你自己的 API Key，直连模型服务商；Key 与学习数据保存在本机；调用模型时会发送课件内容和提问。</p>
+          <label class="field-label">快捷选择服务商 <span class="en-sub">价格与额度以服务商当前政策为准</span></label>
+          <div id="preset-list" class="preset-list"></div>
+          <p id="preset-help" class="hint"></p>
+          <label class="field-label">接口地址 API Base URL</label>
+          <input id="set-base" placeholder="https://api.deepseek.com/v1">
+          <label class="field-label">API Key</label>
+          <div class="key-row">
+            <input id="set-key" type="password" placeholder="sk-...">
+            <button id="btn-eye" class="btn ghost" type="button">显示</button>
+          </div>
+          <p class="hint" id="key-hint"></p>
+          <label class="field-label">模型名称 Model</label>
+          <input id="set-model" list="model-list" placeholder="deepseek-chat">
+          <datalist id="model-list">
+            <option value="deepseek-chat"><option value="glm-4-flash"><option value="glm-4-plus">
+            <option value="gpt-4o-mini"><option value="moonshot-v1-8k"><option value="Qwen/Qwen2.5-72B-Instruct">
+          </datalist>
+          <div class="settings-actions">
+            <button id="btn-test" class="btn">① 测试连接</button>
+            <button id="btn-save-settings" class="btn primary">② 保存配置</button>
+          </div>
+          <p id="test-result" class="hint"></p>
+        </div>
+        <div class="card card-pad">
+          <h3>关于本平台 <span class="en-sub">About</span></h3>
+          <div class="about-item"><b>🔁 对照翻译</b><p>上传英文课件后自动抽取文本块并翻译，生成保留原始排版的中文 PDF，双栏同步阅读。</p></div>
+          <div class="about-item"><b>♻️ 可持续设计</b><p>翻译结果按内容哈希缓存复用；课程总结可把新增课件融入已有总结，减少重复处理。</p></div>
+          <div class="about-item"><b>🔒 隐私优先</b><p>本地部署、本地存储；调用模型时会向你选择的服务商发送内容和认证信息。</p></div>
+          <div class="about-item"><b>📥 数据导出</b><p>总结与译制版 PDF 均可随时下载，学习资产归你所有。</p></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div id="toast-wrap"></div>
+
+<div id="modal-mask" class="hidden">
+  <div class="modal">
+    <h3><span id="modal-title">新建课程</span> <span class="en-sub" id="modal-en">New Course</span></h3>
+    <label class="field-label">课程名称 *</label>
+    <input id="mc-name" placeholder="如：Database Systems">
+    <label class="field-label">课程代码</label>
+    <input id="mc-code" placeholder="如：CST204">
+    <label class="field-label">授课教师</label>
+    <input id="mc-teacher" placeholder="选填">
+    <div class="modal-actions">
+      <button id="mc-cancel" class="btn ghost">取消</button>
+      <button id="mc-ok" class="btn primary">创建</button>
+    </div>
+  </div>
+</div>
+
+<script src="/vendor/pdf.min.js"></script>
+<script>if(!window.pdfjsLib){document.write('<script src="https:\/\/cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"><\/script>');}</script>
+<script src="/js/app.js?v=6"></script>
+</body>
+</html>
