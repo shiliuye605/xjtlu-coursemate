@@ -10,7 +10,7 @@
 
 **[下载最新版软件](https://github.com/shiliuye605/xjtlu-coursemate/releases/latest)**
 
-1. 在 Releases 下载 `西浦课件通-Windows64位-v1.2.0.zip`，完整解压。
+1. 在 Releases 下载 `CourseMate-Windows-x64-v1.2.0.zip`，完整解压。
 2. 双击紫色图标的 `西浦课件通.exe`，无须安装 Python。请保留旁边的 `_internal` 文件夹。
 3. 进入「设置」，填写自己的智谱 API Key，测试连接后保存。
 4. 新建课程并上传可选中文字的 PDF。右上角「使用说明」或 F1 可打开带实际页面标注的教程。
