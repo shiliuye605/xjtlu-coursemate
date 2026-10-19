@@ -48,12 +48,10 @@ def _now() -> str:
 
 
 def start_analysis(doc_id: int) -> bool:
-    """后台启动分析；同一文档不会重复启动。"""
-    with _lock:
-        if doc_id in _running:
-            return False
-        _running.add(doc_id)
-    threading.Thread(target=_run, args=(doc_id,), daemon=True).start()
+    """Compatibility entry point; the persistent worker owns all new analysis."""
+    from .study_ai import _document, _sources, register_pages
+    doc=_document(doc_id)
+    register_pages(doc_id,_sources(doc))
     return True
 
 

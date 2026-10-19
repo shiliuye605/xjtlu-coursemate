@@ -122,13 +122,10 @@ function mdRender(md) {
     const s = raw.trim();
     if (s.startsWith("```")) {
       if (inCode) {
-        html += "</code></pre>";   // 必须先闭合 pre，否则后续内容全部掉进代码块渲染规则（不折行、横向溢出）
         const tree = asciiTreeHtml(codeBuf);
         if (tree) html += tree;
-        else {
-          const listHtml = listBlockHtml(codeBuf);
-          if (listHtml) html += listHtml;
-        }
+        else if (listBlockHtml(codeBuf)) html += listBlockHtml(codeBuf);
+        else html += "</code></pre>";
         codeBuf = "";
       } else {
         html += "<pre><code>";
@@ -187,11 +184,19 @@ class Viewer {
     this.doc = null;
     this.io = null;
     this.items = [];
+    this.generation = 0;
+    this.loadingTask = null;
   }
   async load(url) {
     this.destroy();
-    this.doc = await pdfjsLib.getDocument({ url }).promise;
-    const first = await this.doc.getPage(1);
+    const generation=this.generation;
+    const task=pdfjsLib.getDocument({url});this.loadingTask=task;
+    try {
+    const doc=await task.promise;
+    if(generation!==this.generation){doc.destroy().catch(()=>{});return}
+    this.doc=doc;
+    const first = await doc.getPage(1);
+    if(generation!==this.generation)return;
     const pw = first.getViewport({ scale: 1 }).width;
     const scale = Math.max(0.35, (this.el.clientWidth - 26) / pw);
     this.el.innerHTML = "";
@@ -206,15 +211,23 @@ class Viewer {
       this.items.push(ph);
     }
     this.io = new IntersectionObserver((es) => {
-      es.forEach((e) => { if (e.isIntersecting) this.render(e.target); });
+      es.forEach((e) => { if (e.isIntersecting) this.render(e.target).catch(error=>console.warn('PDF page could not render',error)); });
     }, { root: this.el, rootMargin: "500px" });
     this.items.forEach((p) => this.io.observe(p));
+    } catch(error) {
+      if(generation!==this.generation)return;
+      throw error;
+    }
   }
   async render(ph) {
     if (ph.dataset.done) return;
+    const generation=this.generation,doc=this.doc;
+    if(!doc)return;
     ph.dataset.done = "1";
+    try {
     const n = +ph.dataset.page;
-    const page = await this.doc.getPage(n);
+    const page = await doc.getPage(n);
+    if(generation!==this.generation||!ph.isConnected)return;
     const scale = Math.max(0.35, (this.el.clientWidth - 26) / page.getViewport({ scale: 1 }).width);
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const vp = page.getViewport({ scale });
@@ -225,19 +238,27 @@ class Viewer {
     ph.style.height = Math.round(vp.height) + "px";
     const ctx = canvas.getContext("2d");
     await page.render({ canvasContext: ctx, viewport: page.getViewport({ scale: scale * dpr }) }).promise;
+    if(generation!==this.generation||!ph.isConnected)return;
     ph.appendChild(canvas);
+    } catch(error) {
+      if(generation!==this.generation||error.name==='RenderingCancelledException')return;
+      delete ph.dataset.done;throw error;
+    }
   }
   destroy() {
+    this.generation++;
     if (this.io) this.io.disconnect();
-    if (this.doc) try { this.doc.destroy(); } catch (_) {}
+    if (this.loadingTask) try { this.loadingTask.destroy().catch(()=>{}); } catch (_) {}
+    else if (this.doc) try { this.doc.destroy().catch(()=>{}); } catch (_) {}
     this.el.innerHTML = "";
     this.doc = null;
+    this.loadingTask=null;this.items=[];
   }
 }
 
 const viewerL = new Viewer($("#viewer-left"));
 const viewerR = new Viewer($("#viewer-right"));
-const viewerS = new Viewer($("#viewer-summary"));
+
 
 let syncing = false;
 function bindSync(a, b) {
@@ -251,35 +272,46 @@ function bindSync(a, b) {
   });
 }
 function updatePageInd(ratio) {
-  const n = state.doc?.page_count || 1;
-  const page = Math.min(n, Math.max(1, Math.round(ratio * (n - 1)) + 1));
+  const n = state.doc?.page_count || viewerL.doc?.numPages || 1;
+  const top=viewerL.el.getBoundingClientRect().top+40;
+  const actual=viewerL.items.find(item=>item.isConnected && item.getBoundingClientRect().bottom>top);
+  const page=actual ? +actual.dataset.page : Math.min(n,Math.max(1,Math.round(ratio*(n-1))+1));
   $("#page-ind-left").textContent = `第 ${page} / ${n} 页`;
   $("#page-ind-right").textContent = `第 ${page} / ${n} 页`;
+  window.StudyAI?.readerPageChanged(page);
 }
+window.courseMateGoToPage = number => {
+  syncing=true;
+  for(const viewer of [viewerL,viewerR]){
+    const item=viewer.items[number-1];
+    if(item?.isConnected)viewer.el.scrollTop+=item.getBoundingClientRect().top-viewer.el.getBoundingClientRect().top-8;
+  }
+  updatePageInd(0);requestAnimationFrame(()=>syncing=false);
+};
+
 bindSync($("#viewer-left"), $("#viewer-right"));
 bindSync($("#viewer-right"), $("#viewer-left"));
 
 /* ---------------- 顶部导航 ---------------- */
-$$("#tabs .tab").forEach((btn) => {
+$$("#tabs .tab[data-tab]").forEach((btn) => {
   btn.addEventListener("click", () => {
     $$("#tabs .tab").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     $$(".tab-page").forEach((p) => p.classList.remove("active"));
     $("#tab-" + btn.dataset.tab).classList.add("active");
-    if (btn.dataset.tab === "chat") refreshChatContext();
-    if (btn.dataset.tab === "summary") loadSummary();
+
   });
 });
 
 $("#api-chip").addEventListener("click", () => {
-  $$('#tabs .tab')[3].click();
+  document.querySelector('[data-tab="settings"]').click();
 });
 
 /* ---------------- 课程 ---------------- */
 async function loadCourses() {
   state.courses = await api("/courses");
   renderCourses();
-  if (!state.courseId && state.courses.length) selectCourse(state.courses[0].id);
+  if (!state.courseId && state.courses.length) await selectCourse(state.courses[0].id);
   if (!state.courses.length) $("#doc-empty").classList.remove("hidden");
 }
 
@@ -314,8 +346,10 @@ function renderCourses() {
 async function selectCourse(id) {
   state.courseId = id;
   state.doc = null;
+  window.StudyAI?.contextChanged();
   renderCourses();
   await loadDocs();
+  if(state.courseId!==id)return;
   $("#doc-work").classList.remove("hidden");
   $("#doc-empty").classList.add("hidden");
   $("#doc-title").textContent = "—";
@@ -325,10 +359,7 @@ async function selectCourse(id) {
   $("#right-placeholder").classList.add("hidden");
   // 自动打开第一份课件，避免刷新后双栏空白
   if (state.docs.length) await openDoc(state.docs[0].id);
-  if (["chat", "summary"].includes(currentTab())) {
-    refreshChatContext();
-    if (currentTab() === "summary") loadSummary();
-  }
+  window.StudyAI?.contextChanged();
 }
 
 function currentTab() {
@@ -382,12 +413,17 @@ const STATUS_TEXT = {
 
 async function loadDocs() {
   if (!state.courseId) return;
-  state.docs = await api(`/courses/${state.courseId}/documents`);
+  const course=state.courseId,documents=await api(`/courses/${course}/documents`);
+  if(course!==state.courseId)return;
+  state.docs = documents;
+  const entry=state.courses.find(item=>item.id===course);
+  if(entry){entry.doc_count=documents.length;entry.done_count=documents.filter(doc=>doc.status==='done').length;renderCourses()}
   renderDocStrip();
   if (state.doc) {
     const cur = state.docs.find((d) => d.id === state.doc.id);
     if (cur) { state.doc = { ...state.doc, ...cur }; refreshDocHead(); }
   }
+  window.StudyAI?.contextChanged();
   stopPollIfIdle();
 }
 
@@ -410,6 +446,7 @@ async function openDoc(id) {
   const d = state.docs.find((x) => x.id === id);
   if (!d) return;
   state.doc = { ...d };
+  window.StudyAI?.contextChanged();
   renderDocStrip();
   refreshDocHead();
   $("#right-placeholder").classList.add("hidden");
@@ -418,23 +455,37 @@ async function openDoc(id) {
     viewerL.load(`/api/documents/${id}/files/original`),
     loadRightViewer(),
   ]);
+  if(state.doc?.id!==id)return;
   if (["translating", "extracting"].includes(d.status)) startPolling();
-  loadTutor().catch(() => {});
+  window.StudyAI?.refresh();
 }
 
 function refreshDocHead() {
   const d = state.doc;
   if (!d) return;
   $("#doc-title").textContent = d.filename;
-  const parts = [STATUS_TEXT[d.status] || d.status];
+  const waiting = d.status === "translating" && d.status_message;
+  const parts = [waiting ? "等待自动继续" : (STATUS_TEXT[d.status] || d.status)];
   if (d.page_count) parts.push(`${d.page_count} 页`);
   if (d.char_count) parts.push(`${d.char_count.toLocaleString()} 字符`);
   if (d.error) parts.push("错误：" + d.error);
+  if (waiting) parts.push(translationProgressText(d));
   $("#doc-meta").textContent = parts.join(" · ");
   $("#btn-translate").disabled = ["extracting", "translating"].includes(d.status);
   $("#btn-translate").textContent =
     d.status === "done" ? "⟳ 重新翻译" :
+    waiting ? "等待自动继续…" :
     ["extracting", "translating"].includes(d.status) ? "翻译中…" : "开始翻译";
+}
+
+function translationProgressText(d) {
+  if (d.status_message) {
+    const seconds = Math.max(0, Math.ceil((d.retry_at || 0) - Date.now() / 1000));
+    return d.status_message + (seconds ? `（约 ${seconds} 秒后重试）` : "");
+  }
+  return d.status === "extracting" ? "正在解析课件结构与文本…" :
+    d.status === "translating" ? (d.progress >= 90 ? "正在生成中文 PDF 并检查排版…" : "AI 正在翻译课件文本…") :
+    d.status === "done" ? "翻译完成 ✓" : (d.error || "翻译失败");
 }
 
 async function loadRightViewer() {
@@ -442,7 +493,7 @@ async function loadRightViewer() {
   if (d && d.status === "done") {
     $("#right-placeholder").classList.add("hidden");
     try {
-      await viewerR.load(`/api/documents/${d.id}/files/translated`);
+      await viewerR.load(`/api/documents/${d.id}/files/translated?v=${encodeURIComponent(d.translated_at || "")}`);
       updatePageInd(0);
     } catch (_) {
       showRightPlaceholder("译制版 PDF 加载失败，请重试翻译");
@@ -450,7 +501,7 @@ async function loadRightViewer() {
   } else {
     viewerR.destroy();
     showRightPlaceholder(d?.status === "failed"
-      ? (d.error || "翻译失败") + "（可配置好 API 后重新点击「开始翻译」）"
+      ? (d.error || "翻译失败") + "（已完成译文有缓存，重试会继续使用）"
       : "翻译完成后，这里将显示保留原排版的中文对照 PDF");
   }
 }
@@ -461,26 +512,122 @@ function showRightPlaceholder(text) {
 }
 
 /* ---------------- 上传 / 翻译 / 轮询 ---------------- */
-$("#file-input").addEventListener("change", async (e) => {
+const uploadDialog = $("#upload-dialog"), uploadZone = $("#upload-zone");
+let uploadBusy = false, uploadTrigger = null, uploadCourseId = null, dragDepth = 0;
+
+function uploadError(message = "") {
+  $("#upload-error").textContent = message;
+  $("#upload-error").hidden = !message;
+}
+
+function setUploadBusy(busy, name = "") {
+  uploadBusy = busy;
+  uploadDialog.setAttribute("aria-busy", String(busy));
+  ["#upload-choose", "#upload-cancel", "#upload-close"].forEach((id) => { $(id).disabled = busy; });
+  $("#upload-prompt").textContent = busy ? "正在上传课件…" : "拖拽 PDF 文件到这里";
+  $("#upload-alternative").textContent = busy ? name : "或点击下方按钮选择文件";
+}
+
+$$('[data-upload-open]').forEach((button) => button.addEventListener("click", () => {
+  if (!state.courseId) return toast("请先创建或选择一个课程", "err");
+  uploadTrigger = button;
+  uploadCourseId = state.courseId;
+  const course = state.courses.find((c) => c.id === uploadCourseId);
+  $("#upload-subtitle").textContent = course ? `添加到「${course.name}」` : "将 PDF 添加到当前课程";
+  uploadError();
+  setUploadBusy(false);
+  uploadDialog.showModal();
+  $("#upload-choose").focus();
+}));
+
+function closeUpload() { if (!uploadBusy) uploadDialog.close(); }
+$("#upload-close").addEventListener("click", closeUpload);
+$("#upload-cancel").addEventListener("click", closeUpload);
+uploadDialog.addEventListener("cancel", (e) => { if (uploadBusy) e.preventDefault(); });
+uploadDialog.addEventListener("click", (e) => {
+  if (e.target !== uploadDialog) return;
+  const rect = uploadDialog.getBoundingClientRect();
+  if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) closeUpload();
+});
+uploadDialog.addEventListener("close", () => {
+  dragDepth = 0;
+  uploadZone.classList.remove("drag-over");
+  $("#file-input").value = "";
+  uploadTrigger?.focus();
+});
+$("#upload-choose").addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (!uploadBusy) $("#file-input").click();
+});
+uploadZone.addEventListener("click", (e) => {
+  if (!uploadBusy && !e.target.closest("button,input")) $("#file-input").click();
+});
+$("#file-input").addEventListener("change", (e) => {
   const file = e.target.files[0];
   e.target.value = "";
-  if (!file || !state.courseId) return;
-  const fd = new FormData();
-  fd.append("file", file);
-  toast("正在上传 " + file.name + " …");
+  if (file) uploadFile(file);
+});
+uploadZone.addEventListener("dragenter", (e) => {
+  e.preventDefault();
+  if (uploadBusy || !Array.from(e.dataTransfer?.types || []).includes("Files")) return;
+  dragDepth++;
+  uploadZone.classList.add("drag-over");
+});
+uploadZone.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = uploadBusy ? "none" : "copy";
+});
+uploadZone.addEventListener("dragleave", (e) => {
+  e.preventDefault();
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) uploadZone.classList.remove("drag-over");
+});
+uploadZone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  dragDepth = 0;
+  uploadZone.classList.remove("drag-over");
+  if (uploadBusy) return;
+  const files = Array.from(e.dataTransfer?.files || []);
+  if (files.length !== 1) return uploadError("请每次上传一个 PDF 文件。");
+  uploadFile(files[0]);
+});
+["dragover", "drop"].forEach((type) => document.addEventListener(type, (e) => {
+  if (uploadDialog.open && Array.from(e.dataTransfer?.types || []).includes("Files")) e.preventDefault();
+}));
+
+async function uploadFile(file) {
+  if (uploadBusy || !uploadCourseId) return;
+  uploadError();
+  if (!file.name.toLowerCase().endsWith(".pdf")) return uploadError("仅支持 PDF 文件，请重新选择。");
+  if (file.size > 80 * 1024 * 1024) return uploadError("文件超过 80MB，请选择较小的 PDF。");
+  setUploadBusy(true, file.name);
+  let uploaded = false;
   try {
-    const r = await api(`/courses/${state.courseId}/documents`, { method: "POST", body: fd });
+    const header = new Uint8Array(await file.slice(0, 5).arrayBuffer());
+    if (String.fromCharCode(...header) !== "%PDF-") throw new Error("文件不是有效的 PDF，请检查后重试。");
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await api(`/courses/${uploadCourseId}/documents`, { method: "POST", body: fd });
+    uploaded = true;
+    setUploadBusy(false);
+    uploadDialog.close();
     await loadDocs();
+    $("#doc-empty").classList.add("hidden");
+    $("#doc-work").classList.remove("hidden");
     await openDoc(r.id);
     toast(r.auto_started ? "上传成功，已自动开始翻译" : "上传成功（配置 API Key 后可开始翻译）", "ok");
     if (!r.auto_started && !state.settings?.ready) switchToSettings();
   } catch (err) {
-    toast("上传失败：" + err.message, "err");
+    if (uploaded) toast("文件已上传，阅读界面加载失败，请重新打开课件。", "err");
+    else uploadError("上传失败：" + err.message);
+  } finally {
+    setUploadBusy(false);
   }
-});
+}
 
 function switchToSettings() {
-  $$("#tabs .tab")[3].click();
+  document.querySelector('[data-tab="settings"]').click();
 }
 
 $("#btn-translate").addEventListener("click", async () => {
@@ -488,8 +635,13 @@ $("#btn-translate").addEventListener("click", async () => {
   try {
     await api(`/documents/${state.doc.id}/translate`, { method: "POST" });
     state.doc.status = "extracting";
+    state.doc.status_message = "";
+    state.doc.retry_at = 0;
+    state.doc.error = "";
     refreshDocHead();
     renderDocStrip();
+    viewerR.destroy();
+    showRightPlaceholder("正在翻译课件，完成后自动显示中文对照 PDF；临时限流或断连会自动等待重试。");
     startPolling();
     toast("已开始翻译，请稍候…", "ok");
   } catch (err) {
@@ -504,8 +656,7 @@ $("#btn-del-doc").addEventListener("click", async () => {
   state.doc = null;
   viewerL.destroy();
   viewerR.destroy();
-  stopTutorPoll();
-  $("#tutor-panel").classList.add("hidden");
+  window.StudyAI?.contextChanged();
   $("#doc-title").textContent = "—";
   $("#doc-meta").textContent = "";
   $("#right-placeholder").classList.add("hidden");
@@ -536,11 +687,10 @@ function startPolling() {
       state.doc = { ...state.doc, ...d };
       $("#progress-bar").style.width = d.progress + "%";
       $("#progress-pct").textContent = d.progress + "%";
-      $("#progress-text").textContent =
-        d.status === "extracting" ? "正在解析课件结构与文本…" :
-        d.status === "translating" ? "AI 正在逐页翻译并回写排版…" :
-        d.status === "done" ? "翻译完成 ✓" : (d.error || "翻译失败");
+      $("#progress-text").textContent = translationProgressText(d);
+      refreshDocHead();
       if (d.status === "translating" || d.status === "extracting") {
+        showRightPlaceholder(d.status_message ? translationProgressText(d) : "正在翻译课件，完成后自动显示中文对照 PDF。");
         loadDocs().catch(() => {});
         return;
       }
@@ -551,9 +701,9 @@ function startPolling() {
         $("#progress-wrap").classList.add("hidden");
         await loadRightViewer();
         toast("翻译完成，右栏已生成对照 PDF", "ok");
-        loadTutor().catch(() => {});   // 翻译完成 → 展示自动开始的辅导分析
+        window.StudyAI?.refresh();   // 翻译完成 → 展示自动开始的辅导分析
       } else {
-        $("#progress-bar").style.width = "0%";
+        showRightPlaceholder((d.error || "翻译未完成") + "（已完成译文有缓存，重试会继续使用）");
         refreshDocHead();
       }
     } catch (_) {}
@@ -567,282 +717,53 @@ function stopPollIfIdle() {
   }
 }
 
-/* ---------------- AI 辅导分析（imis-course-tutor skill） ---------------- */
-let tutorTimer = null;
-
-function stopTutorPoll() {
-  if (tutorTimer) { clearInterval(tutorTimer); tutorTimer = null; }
-}
-
-async function loadTutor() {
-  stopTutorPoll();
-  const id = state.doc?.id;
-  if (!id) return;
-  const a = await api(`/documents/${id}/analysis`);
-  if (state.doc?.id !== id) return;          // 期间用户切换了课件
-  $("#tutor-panel").classList.remove("hidden");
-  const badge = $("#tutor-badge"), retry = $("#btn-tutor-retry");
-  badge.classList.add("hidden");
-  retry.classList.add("hidden");
-  const status = $("#tutor-status"), md = $("#tutor-md");
-  if (a.status === "done") {
-    status.textContent = a.analyzed_at ? `分析生成于 ${a.analyzed_at} · 基于 imis-course-tutor 技能` : "";
-    md.innerHTML = mdRender(a.markdown || "");
-    retry.classList.remove("hidden");
-    $("#tutor-panel").classList.add("collapsed");   // 分析完成默认收起，把空间留给课件双栏
-  } else if (a.status === "running") {
-    md.innerHTML = "";
-    status.textContent =
-      "📘 AI 辅导老师正在分析这份课件（课程定位 → 结构总览 → 核心概念详解 → 考点提醒 → 现实应用 → 自测题），约需 1~3 分钟…";
-    tutorTimer = setInterval(() => loadTutor().catch(() => {}), 6000);
-  } else if (a.status === "failed") {
-    md.innerHTML = "";
-    status.textContent = "分析生成失败（模型调用异常），可点击「重新生成」再试。";
-    retry.classList.remove("hidden");
-  } else {
-    md.innerHTML = "";
-    if (state.doc?.status === "done") {
-      status.textContent = "这份课件还没有辅导分析，点击「重新生成」立即生成。";
-      retry.classList.remove("hidden");
-    } else {
-      status.textContent = "翻译完成后，AI 辅导老师将自动分析这份课件：课程定位 / 结构总览 / 核心概念 / 考点 / 现实应用 / 自测题。";
-    }
-  }
-}
-
-$("#btn-tutor-retry").addEventListener("click", async () => {
-  if (!state.doc) return;
-  try {
-    await api(`/documents/${state.doc.id}/analyze`, { method: "POST" });
-    loadTutor().catch(() => {});
-    toast("已开始生成辅导分析…", "ok");
-  } catch (err) {
-    toast(err.message, "err");
-  }
-});
-
-// 点击面板头部展开 / 收起辅导分析
-$("#tutor-head").addEventListener("click", (e) => {
-  if (e.target.closest("button")) return;
-  $("#tutor-panel").classList.toggle("collapsed");
-});
-
-/* ---------------- AI 助教 ---------------- */
-function refreshChatContext() {
-  const sel = $("#chat-context");
-  sel.innerHTML = "";
-  if (!state.courseId) {
-    sel.innerHTML = `<option value="">（请先在左侧选择/创建课程）</option>`;
-    return;
-  }
-  const opt0 = document.createElement("option");
-  opt0.value = "0";
-  opt0.textContent = "整门课程（最近 3 份课件）";
-  sel.appendChild(opt0);
-  state.docs.filter((d) => d.status === "done").forEach((d) => {
-    const o = document.createElement("option");
-    o.value = d.id;
-    o.textContent = "📄 " + d.filename;
-    sel.appendChild(o);
-  });
-}
-
-function addMsg(role, text = "") {
-  const wrap = document.createElement("div");
-  wrap.className = "msg " + (role === "user" ? "user" : "ai");
-  wrap.innerHTML = `
-    <div class="avatar">${role === "user" ? "我" : "AI"}</div>
-    <div class="bubble">${mdRender(text)}</div>`;
-  $("#chat-messages").appendChild(wrap);
-  $("#chat-messages").scrollTop = $("#chat-messages").scrollHeight;
-  return wrap.querySelector(".bubble");
-}
-
-async function loadChatHistory() {
-  const box = $("#chat-messages");
-  box.innerHTML = `
-    <div class="chat-welcome">
-      <div class="empty-icon">🎓</div>
-      <h3>AI 课程助教</h3>
-      <p>基于你上传的课件内容答疑解惑，支持 DeepSeek / GLM / OpenAI / Kimi 等模型（自带 API Key）</p>
-    </div>`;
-  if (!state.courseId) return;
-  try {
-    const hist = await api(`/chat/history?course_id=${state.courseId}`);
-    hist.forEach((m) => addMsg(m.role === "user" ? "user" : "ai", m.content));
-  } catch (_) {}
-}
-
-$("#btn-clear-chat").addEventListener("click", async () => {
-  if (!state.courseId) return;
-  if (!confirm("确定清空本课程的对话记录？")) return;
-  await api(`/chat/history?course_id=${state.courseId}`, { method: "DELETE" });
-  loadChatHistory();
-  toast("对话记录已清空", "ok");
-});
-
-async function sendChat() {
-  if (state.sending) return;
-  const ta = $("#chat-text");
-  const text = ta.value.trim();
-  if (!text) return;
-  if (!state.courseId) return toast("请先选择课程", "err");
-  if (!state.settings?.ready) { switchToSettings(); return toast("请先在设置中配置 API Key", "err"); }
-  ta.value = "";
-  ta.style.height = "auto";
-  addMsg("user", text);
-  const bubble = addMsg("ai");
-  bubble.innerHTML = '<span class="cursor"></span>';
-  state.sending = true;
-  $("#btn-send").disabled = true;
-
-  // 收集最近对话（含本条），供服务端拼接上下文
-  const msgs = [];
-  $$("#chat-messages .msg").forEach((m) => {
-    const isUser = m.classList.contains("user");
-    const content = m.querySelector(".bubble").innerText.trim();
-    if (content && !(isUser && content === text && msgs.length)) {
-      msgs.push({ role: isUser ? "user" : "assistant", content });
-    }
-  });
-  if (!msgs.some((m) => m.role === "user" && m.content === text)) msgs.push({ role: "user", content: text });
-
-  try {
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        course_id: state.courseId,
-        document_id: +($("#chat-context").value || 0),
-        messages: msgs.slice(-16),
-      }),
-    });
-    if (!res.ok) {
-      let msg = res.statusText;
-      try { msg = (await res.json()).detail || msg; } catch (_) {}
-      throw new Error(msg);
-    }
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let full = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      full += dec.decode(value, { stream: true });
-      bubble.innerHTML = mdRender(full) + '<span class="cursor"></span>';
-      $("#chat-messages").scrollTop = $("#chat-messages").scrollHeight;
-    }
-    bubble.innerHTML = mdRender(full || "（模型未返回内容）");
-  } catch (err) {
-    bubble.innerHTML = mdRender("⚠️ " + err.message);
-    if (String(err.message).includes("设置")) switchToSettings();
-  }
-  state.sending = false;
-  $("#btn-send").disabled = false;
-}
-
-$("#btn-send").addEventListener("click", sendChat);
-$("#chat-text").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
-});
-$("#chat-text").addEventListener("input", function () {
-  this.style.height = "auto";
-  this.style.height = Math.min(120, this.scrollHeight) + "px";
-});
-
-/* ---------------- 课程总结 ---------------- */
-async function loadSummary() {
-  if (!state.courseId) return;
-  const s = await api(`/courses/${state.courseId}/summary`).catch(() => null);
-  if (!s) return;
-  $("#summary-meta").textContent = s.updated_at
-    ? `上次更新：${s.updated_at} · 已纳入 ${s.included.length} / ${s.doc_count} 份课件`
-    : "把整门课程的课件沉淀为一份持续更新的复习文档";
-  const badge = $("#summary-pending");
-  if (s.pending_count > 0) {
-    badge.classList.remove("hidden");
-    badge.textContent = `⚡ 有 ${s.pending_count} 份新课件未纳入总结，点击「更新总结」`;
-  } else {
-    badge.classList.add("hidden");
-  }
-  if (s.markdown) {
-    $("#summary-md").innerHTML = mdRender(s.markdown);
-  }
-  $("#btn-summary-download").classList.toggle("hidden", !s.pdf_ready);
-  if (s.pdf_ready) {
-    $("#btn-summary-download").href = s.pdf_url;
-    $("#summary-pdf-empty").classList.add("hidden");
-    viewerS.load(s.pdf_url).catch(() => {});
-  } else {
-    $("#summary-pdf-empty").classList.remove("hidden");
-  }
-  const hist = await api(`/courses/${state.courseId}/summary/history`).catch(() => []);
-  $("#summary-history").innerHTML = hist.map((h) =>
-    `<div class="hist-chip"><b>${esc(h.created_at)}</b> · ${esc(h.note)}</div>`).join("");
-}
-
-$("#btn-summary-update").addEventListener("click", async () => {
-  if (!state.courseId) return toast("请先选择课程", "err");
-  const btn = $("#btn-summary-update");
-  btn.disabled = true;
-  btn.textContent = "✦ 正在生成（可能需要 1-2 分钟）…";
-  try {
-    await api(`/courses/${state.courseId}/summary/update`, { method: "POST" });
-    toast("课程总结已更新 ✓", "ok");
-    await loadSummary();
-  } catch (err) {
-    toast(err.message, "err");
-    if (String(err.message).includes("设置")) switchToSettings();
-  }
-  btn.disabled = false;
-  btn.textContent = "✦ 更新总结";
-});
-
 /* ---------------- 设置 ---------------- */
+const ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4";
+const ZHIPU_DEFAULT_MODEL = "glm-4.5-flash";
+function isZhipuSettings(settings) {
+  return (settings?.api_base || "").replace(/\/+$/, "") === ZHIPU_API_BASE;
+}
+function savedZhipuKey() {
+  const entries = Object.entries(state.settings?.saved_keys || {});
+  return entries.find(([base]) => base.replace(/\/+$/, "") === ZHIPU_API_BASE)?.[1] || "";
+}
+function zhipuModel() {
+  const model = $("#set-model").value.trim();
+  if (!/^glm-/i.test(model)) throw new Error("请填写智谱 GLM 模型名称，例如 glm-4.5-flash");
+  return model;
+}
+function updateTranslationModeVisibility() {
+  $("#set-base").value = ZHIPU_API_BASE;
+  $("#translation-mode-field").hidden = false;
+}
+
 function renderSettings() {
   const s = state.settings;
-  $("#api-chip").className = "chip " + (s.ready ? "ok" : "warn");
-  $("#api-chip-text").textContent = s.ready ? `已连接 · ${s.model}` : "未配置 API Key";
-  $("#key-hint").textContent = s.has_key ? `已保存：${s.key_hint}（重填可覆盖）` : "尚未保存 Key";
-  $("#preset-list").innerHTML = "";
+  const ready = isZhipuSettings(s) && s.ready;
+  $("#api-chip").className = "chip " + (ready ? "ok" : "warn");
+  $("#api-chip-text").textContent = ready
+    ? (s.translation_mode === "fast" && s.translation_model !== s.model
+      ? `已连接 · 快速翻译 / ${s.model}` : `已连接 · ${s.model}`)
+    : "未配置智谱 API Key";
+  $("#key-hint").textContent = isZhipuSettings(s) && s.has_key
+    ? `已保存：${s.key_hint}（重填可覆盖）`
+    : (savedZhipuKey() ? "已填入之前保存的智谱 Key，测试后保存即可" : "尚未保存智谱 Key");
+  $("#preset-list").innerHTML = '<span class="preset-chip active">智谱 GLM</span>';
   const helpEl = $("#preset-help");
-  if (helpEl) helpEl.textContent = "";
-  Object.entries(s.presets || {}).forEach(([id, p]) => {
-    const chip = document.createElement("button");
-    chip.className = "preset-chip" + (p.free ? " free" : "");
-    chip.textContent = p.label;
-    chip.addEventListener("click", () => {
-      $$(".preset-chip").forEach((c) => c.classList.remove("active"));
-      chip.classList.add("active");
-      $("#set-base").value = p.api_base;
-      $("#set-model").value = p.model;
-      // 该服务商之前填过 Key 则自动带出，免重复输入
-      const saved = state.settings?.saved_keys?.[p.api_base];
-      $("#set-key").value = saved || (id === "mock" ? "demo" : "");
-      $("#key-hint").textContent = saved
-        ? "已自动填入该服务商保存的 Key"
-        : "尚未保存该服务商的 Key";
-      if (helpEl) helpEl.textContent = p.help || "";
-    });
-    $("#preset-list").appendChild(chip);
-  });
+  if (helpEl) helpEl.innerHTML = '在 <a href="https://open.bigmodel.cn/" rel="noreferrer">智谱开放平台</a> 创建 API Key，粘贴到下方后测试并保存。';
 }
 
 async function loadSettings() {
   state.settings = await api("/settings");
-  $("#set-base").value = state.settings.api_base || "";
-  $("#set-model").value = state.settings.model || "";
+  $("#set-base").value = ZHIPU_API_BASE;
+  $("#set-model").value = isZhipuSettings(state.settings) && /^glm-/i.test(state.settings.model || "")
+    ? state.settings.model : ZHIPU_DEFAULT_MODEL;
+  $("#set-key").value = isZhipuSettings(state.settings) ? "" : savedZhipuKey();
+  $("#set-translation-mode").value = state.settings.translation_mode || "fast";
+  updateTranslationModeVisibility();
   renderSettings();
+  window.StudyAI?.settingsChanged();
 }
-
-// 手动修改接口地址时，自动带出该服务商保存过的 Key
-$("#set-base").addEventListener("input", () => {
-  const saved = state.settings?.saved_keys?.[$("#set-base").value.trim()];
-  if (saved) {
-    $("#set-key").value = saved;
-    $("#key-hint").textContent = "已自动填入该服务商保存的 Key";
-  }
-});
 
 $("#btn-eye").addEventListener("click", () => {
   const k = $("#set-key");
@@ -855,10 +776,13 @@ $("#btn-test").addEventListener("click", async () => {
   out.className = "hint";
   out.textContent = "测试中…";
   try {
+    const model = zhipuModel();
+    const key = $("#set-key").value.trim() || savedZhipuKey();
+    if (!key) throw new Error("请先填写你的智谱 API Key");
     const r = await api("/settings/test", {
       method: "POST",
       body: JSON.stringify({
-        api_base: $("#set-base").value, api_key: $("#set-key").value, model: $("#set-model").value,
+        api_base: ZHIPU_API_BASE, api_key: key, model,
       }),
     });
     out.className = "hint ok";
@@ -870,12 +794,12 @@ $("#btn-test").addEventListener("click", async () => {
 });
 
 $("#btn-save-settings").addEventListener("click", async () => {
-  const body = {};
-  if ($("#set-base").value.trim()) body.api_base = $("#set-base").value.trim();
-  if ($("#set-key").value.trim()) body.api_key = $("#set-key").value.trim();
-  if ($("#set-model").value.trim()) body.model = $("#set-model").value.trim();
-  if (!Object.keys(body).length) return toast("请至少填写一项配置", "err");
   try {
+    const body = {api_base: ZHIPU_API_BASE, model: zhipuModel(), translation_mode: $("#set-translation-mode").value};
+    const enteredKey = $("#set-key").value.trim();
+    if (enteredKey) body.api_key = enteredKey;
+    else if (!isZhipuSettings(state.settings) && savedZhipuKey()) body.api_key = savedZhipuKey();
+    else if (!(isZhipuSettings(state.settings) && state.settings.has_key)) throw new Error("请先填写你的智谱 API Key");
     await api("/settings", { method: "POST", body: JSON.stringify(body) });
     toast("配置已保存 ✓", "ok");
     $("#set-key").value = "";
@@ -891,9 +815,9 @@ $("#btn-save-settings").addEventListener("click", async () => {
   try {
     await loadSettings();
     await loadCourses();
-    await loadChatHistory();
+
     if (!state.settings.ready) {
-      toast("提示：先到「设置」配置你的 API Key（可用离线演示模式）");
+      toast("提示：先到「设置」配置你的智谱 API Key");
     }
   } catch (e) {
     toast("初始化失败：" + e.message, "err");

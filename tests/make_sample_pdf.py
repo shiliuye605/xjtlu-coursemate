@@ -12,8 +12,8 @@ LECTURES = [
     {
         "name": "Lecture_01_Database_Systems.pdf",
         "title": "Database Systems & Information Management",
-        "course": "DEMO · Information Management",
-        "footer": "Project-generated study material · Not official courseware",
+        "course": "CST204 · Information Management",
+        "footer": "XJTLU · International Business School Suzhou (IBSS)",
         "pages": [
             ("Agenda", [
                 "What is a Database Management System (DBMS)?",
@@ -48,8 +48,8 @@ LECTURES = [
     {
         "name": "Lecture_02_EBusiness_Sustainability.pdf",
         "title": "E-Business Models & Digital Sustainability",
-        "course": "DEMO · Information Management",
-        "footer": "Project-generated study material · Not official courseware",
+        "course": "CST204 · Information Management",
+        "footer": "XJTLU · International Business School Suzhou (IBSS)",
         "pages": [
             ("From E-Commerce to E-Business", [
                 "E-commerce covers online transactions; e-business covers the whole digital value chain",
@@ -89,7 +89,7 @@ def build(lecture, out_path):
         page = doc.new_page(width=720, height=405)  # 16:9 幻灯片
         page.draw_rect(fitz.Rect(0, 0, 720, 96), color=None, fill=PRIMARY)
         page.draw_rect(fitz.Rect(0, 96, 720, 100), color=None, fill=ACCENT)
-        page.insert_textbox(fitz.Rect(36, 12, 684, 64), title,
+        page.insert_textbox(fitz.Rect(36, 22, 640, 60), title,
                             fontname="helv", fontsize=26, color=(1, 1, 1))
         page.insert_textbox(fitz.Rect(36, 60, 660, 88), lecture["course"],
                             fontname="helv", fontsize=10, color=(0.78, 0.80, 0.95))

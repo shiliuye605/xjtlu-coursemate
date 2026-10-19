@@ -1,7 +1,7 @@
 """西浦课件通 · XJTLU CourseMate —— FastAPI 后端入口。
 
 路由分组：课程 / 课件与翻译 / 设置（BYOK）/ AI 助教（流式）/ 课程总结 / 内置示例。
-静态前端由同一服务托管；本地存储数据，调用模型时向配置的服务商发送内容。
+静态前端由同一服务托管，本地一键运行，数据不出本机。
 """
 import datetime
 import json
@@ -14,9 +14,9 @@ from fastapi.staticfiles import StaticFiles
 
 from .database import (BASE_DIR, FILES_DIR, SUMMARY_DIR, db, get_settings,
                        init_db, llm_config_ready, set_settings)
-from . import llm
+from . import llm, demo_model, study_ai
 from .pdf_utils import summary_markdown_to_pdf
-from .translate_service import recover_stale_jobs, start_translation
+from .translate_service import recover_stale_jobs, start_translation, translation_model
 from .course_tutor import start_analysis
 
 app = FastAPI(title="XJTLU CourseMate API", version="1.0")
@@ -29,30 +29,49 @@ def _startup():
     # 重启会中断进行中的辅导分析线程，把僵尸 running 状态重置为可重试
     with db() as c:
         c.execute("UPDATE documents SET analysis_status='failed' WHERE analysis_status='running'")
+    study_ai.start_workers()
+
+
+@app.on_event('shutdown')
+def _shutdown():
+    study_ai.stop_workers()
 STATIC_DIR = BASE_DIR / "static"
 SAMPLE_DIR = BASE_DIR / "sample_data"
 MAX_SIZE = 80 * 1024 * 1024
 
 PRESETS = {
-    "glm-free": {"label": "智谱 GLM", "api_base": "https://open.bigmodel.cn/api/paas/v4", "model": "glm-4.5-flash",
-                 "help": "在 https://open.bigmodel.cn 创建 API Key；填写控制台当前支持的模型名称。是否提供免费额度、价格及限流规则，以服务商当前政策为准。"},
-    "siliconflow": {"label": "SiliconFlow", "api_base": "https://api.siliconflow.cn/v1", "model": "Qwen/Qwen2.5-7B-Instruct",
-                    "help": "在 https://cloud.siliconflow.cn 创建 API Key；模型可用性、价格与额度以服务商当前政策为准。"},
-    "gemini": {"label": "Google Gemini", "api_base": "https://generativelanguage.googleapis.com/v1beta/openai", "model": "",
-               "help": "在 https://aistudio.google.com 获取 API Key，并填写当前支持的模型名称。网络可达性、价格与额度以实际情况及服务商当前政策为准。"},
-    "openrouter": {"label": "OpenRouter", "api_base": "https://openrouter.ai/api/v1", "model": "",
-                   "help": "在 https://openrouter.ai 创建 API Key，并从当前模型目录选择模型。可用性、价格与限流规则以服务商当前政策为准。"},
-    "ollama": {"label": "本地 Ollama", "api_base": "http://127.0.0.1:11434/v1", "model": "qwen2.5:7b",
-               "help": "先安装 Ollama、下载模型并启动本地服务。API Key 可填 ollama；模型许可、硬件需求与运行成本需按实际情况确认。"},
-    "deepseek": {"label": "DeepSeek", "api_base": "https://api.deepseek.com/v1", "model": "deepseek-chat",
-                 "help": "在 https://platform.deepseek.com 创建 API Key；价格、余额与模型名称以服务商当前政策为准。"},
-    "openai": {"label": "OpenAI", "api_base": "https://api.openai.com/v1", "model": "gpt-4o-mini",
-               "help": "在 https://platform.openai.com 创建 API Key；模型访问权限、价格及地区可用性以服务商当前政策为准。"},
-    "moonshot": {"label": "Moonshot Kimi", "api_base": "https://api.moonshot.cn/v1", "model": "moonshot-v1-8k",
-                 "help": "在 https://platform.moonshot.cn 创建 API Key；模型名称、额度与价格以服务商当前政策为准。"},
-    "mock": {"label": "离线演示（模拟回复）", "api_base": "http://127.0.0.1:9999/v1", "model": "mock-llm",
-             "help": "先运行 demo.bat，再选择此预设并保存。内置示例使用预设中文译文与模拟分析，Key 任填 demo；不调用真实模型，不代表实际模型效果。"},
+    "glm-free": {"label": "智谱 GLM-Flash（免费，推荐）", "free": True,
+                 "api_base": "https://open.bigmodel.cn/api/paas/v4", "model": "glm-4.5-flash",
+                 "help": "完全免费、国内直连，翻译/对话质量对课件场景足够。步骤：注册 https://open.bigmodel.cn → 控制台「API Keys」→ 新建并复制 → 粘贴到下方 API Key。免费模型：glm-4.5-flash（旧版 glm-4-flash 也可用）。"},
+    "siliconflow": {"label": "SiliconFlow（含免费模型）", "free": True,
+                    "api_base": "https://api.siliconflow.cn/v1", "model": "Qwen/Qwen2.5-7B-Instruct",
+                    "help": "注册 https://cloud.siliconflow.cn 赠送体验金；Qwen/Qwen2.5-7B-Instruct 等小模型永久免费，翻译课件够用。在「API 密钥」页新建 Key。"},
+    "gemini": {"label": "Google Gemini（免费额度）", "free": True,
+               "api_base": "https://generativelanguage.googleapis.com/v1beta/openai", "model": "gemini-3.5-flash",
+               "help": "免费额度约 1500 次/天，质量很好。注册 https://aistudio.google.com → Get API key → 弹窗里点「复制密钥」。注意：国内访问需走代理（应用会自动检测本机代理）。"},
+    "openrouter": {"label": "OpenRouter（免费模型）", "free": True,
+                   "api_base": "https://openrouter.ai/api/v1", "model": "deepseek/deepseek-chat-v3.1:free",
+                   "help": "注册 https://openrouter.ai → Keys 页创建。名称带 :free 后缀的模型免费但有限速；模型名以官网 Models 页「免费」标签为准。国内访问可能需要代理。"},
+    "ollama": {"label": "本地 Ollama（离线免费）", "free": True,
+               "api_base": "http://127.0.0.1:11434/v1", "model": "qwen2.5:7b",
+               "help": "完全免费、数据不出本机：安装 https://ollama.com → 终端运行 ollama pull qwen2.5:7b（约 4.7GB）→ 保持 ollama serve 运行。API Key 随便填（如 ollama）。速度取决于你的机器配置。"},
+    "deepseek": {"label": "DeepSeek（低价按量）",
+                 "api_base": "https://api.deepseek.com/v1", "model": "deepseek-chat",
+                 "help": "不免费但极便宜（翻译一份 40 页课件约几分钱）。注册 https://platform.deepseek.com → 充值少量额度 → 创建 API Key。"},
+    "openai": {"label": "OpenAI",
+               "api_base": "https://api.openai.com/v1", "model": "gpt-4o-mini",
+               "help": "按量付费，质量稳定。注册 https://platform.openai.com 创建 Key。国内访问需自行解决网络与支付问题。"},
+    "moonshot": {"label": "Moonshot Kimi",
+                 "api_base": "https://api.moonshot.cn/v1", "model": "moonshot-v1-8k",
+                 "help": "注册 https://platform.moonshot.cn → API Key 管理 → 新建。新用户有赠送额度。"},
+    "mock": {"label": "离线演示（无需 Key）",
+             "api_base": "http://127.0.0.1:9999/v1", "model": "mock-llm",
+             "help": "本机演示模型（先运行 demo.bat 启动），翻译会标注「演示译文」，用于无 Key 时体验完整流程。"},
 }
+
+if os.environ.get('COURSEMATE_DESKTOP') == '1':
+    PRESETS['mock']['api_base'] = os.environ['COURSEMATE_DEMO_BASE']
+    PRESETS['mock']['help'] = '内置离线演示，无需运行其他程序、安装 Python 或填写真实 Key。内容为标注的占位示例，不是真实 AI 翻译。选择此预设后保存配置即可体验。'
 
 
 def now_str() -> str:
@@ -126,6 +145,8 @@ def rename_course(course_id: int, body: dict):
 
 @app.delete("/api/courses/{course_id}")
 def delete_course(course_id: int):
+    with db() as c:ids=[r[0] for r in c.execute('SELECT id FROM documents WHERE course_id=?',(course_id,))]
+    study_ai.cleanup_overviews(ids)
     with db() as c:
         doc_rows = c.execute("SELECT id FROM documents WHERE course_id=?", (course_id,)).fetchall()
         c.execute("DELETE FROM courses WHERE id=?", (course_id,))
@@ -141,7 +162,7 @@ def list_documents(course_id: int):
     with db() as c:
         rows = c.execute(
             """SELECT id, filename, page_count, char_count, status, progress, error,
-                      created_at, translated_at, analysis_status
+                      created_at, translated_at, analysis_status, status_message, retry_at
                FROM documents WHERE course_id=? ORDER BY id DESC""", (course_id,)).fetchall()
     return [dict(r) for r in rows]
 
@@ -177,7 +198,7 @@ def upload_sample(course_id: int):
 def document_status(doc_id: int):
     with db() as c:
         r = c.execute("""SELECT id, course_id, filename, page_count, char_count,
-                                status, progress, error, translated_path, analysis_status
+                                status, progress, error, translated_path, analysis_status, status_message, retry_at
                          FROM documents WHERE id=?""", (doc_id,)).fetchone()
     if not r:
         raise HTTPException(404, "文档不存在")
@@ -211,7 +232,7 @@ def analyze_document(doc_id: int):
         raise HTTPException(400, "请先完成课件翻译，再生成辅导分析")
     if not llm_config_ready(get_settings()):
         raise HTTPException(400, "尚未配置 API Key，请先到「设置」页配置模型服务")
-    start_analysis(doc_id)
+    study_ai.queue_overview(study_ai._document(doc_id)['course_id'],[doc_id],force=True)
     return {"ok": True}
 
 
@@ -225,12 +246,14 @@ def translate_document(doc_id: int):
         raise HTTPException(409, "该文档正在翻译中，请稍候")
     if not llm_config_ready(get_settings()):
         raise HTTPException(400, "尚未配置 API Key，请先到「设置」页配置模型服务")
-    start_translation(doc_id)
+    if not start_translation(doc_id):
+        raise HTTPException(409, "该文档正在翻译中，请稍候")
     return {"ok": True}
 
 
 @app.delete("/api/documents/{doc_id}")
 def delete_document(doc_id: int):
+    study_ai.cleanup_overviews([doc_id])
     with db() as c:
         c.execute("DELETE FROM documents WHERE id=?", (doc_id,))
     shutil.rmtree(FILES_DIR / str(doc_id), ignore_errors=True)
@@ -249,7 +272,8 @@ def document_file(doc_id: int, kind: str):
     path = r["original_path"] if kind == "original" else r["translated_path"]
     if not path or not os.path.exists(path):
         raise HTTPException(404, "文件尚未生成")
-    return FileResponse(path, media_type="application/pdf")
+    return FileResponse(path, media_type="application/pdf",
+                        headers={"Cache-Control":"no-store"} if kind == "translated" else None)
 
 
 def _load_saved_keys(cfg: dict) -> dict:
@@ -271,6 +295,8 @@ def get_settings_api():
     return {
         "api_base": cfg.get("api_base", ""),
         "model": cfg.get("model", ""),
+        "translation_mode": cfg.get("translation_mode", "standard"),
+        "translation_model": translation_model(cfg),
         "has_key": bool(key),
         "key_hint": ("••••••••" + key[-4:]) if len(key) > 4 else "",
         "ready": llm_config_ready(cfg),
@@ -281,8 +307,10 @@ def get_settings_api():
 
 @app.post("/api/settings")
 def save_settings_api(body: dict):
+    if 'translation_mode' in body and body['translation_mode'] not in ('fast', 'standard'):
+        raise HTTPException(400, "翻译模式无效")
     data = {k: str(v).strip() for k, v in body.items()
-            if k in ("api_base", "api_key", "model") and str(v).strip()}
+            if k in ("api_base", "api_key", "model", "translation_mode") and str(v).strip()}
     if not data:
         raise HTTPException(400, "没有可保存的配置")
     # 记住该服务商的 Key，切换预设时自动带出
@@ -336,6 +364,21 @@ async def chat_api(body: dict):
     history = body.get("messages") or []
     if not history:
         raise HTTPException(400, "消息不能为空")
+    try:
+        page_number=max(0,int(body.get('page_number') or 0))
+    except (ValueError,TypeError):
+        raise HTTPException(400,'页码无效')
+    scope_ids=body.get('document_ids') or []
+    scope_key=''
+    if scope_ids:
+        scope_ids,_=study_ai._validate_scope(course_id,scope_ids)
+        scope_key=','.join(map(str,scope_ids))
+    if document_id:
+        doc=study_ai._document(document_id)
+        if doc['course_id']!=course_id:raise HTTPException(400,'课件不属于当前课程')
+        if page_number>doc['page_count']:raise HTTPException(400,'页码超过课件范围')
+    elif page_number:
+        raise HTTPException(400,'请先选择对应课件')
 
     course_name = ""
     with db() as c:
@@ -344,6 +387,19 @@ async def chat_api(body: dict):
             course_name = row["name"] + (f"（{row['code']}）" if row["code"] else "")
 
     context = _build_context(course_id, document_id)
+    if document_id and page_number:
+        with db() as c:
+            row=c.execute('SELECT source,markdown FROM study_pages WHERE document_id=? AND page_number=?',(document_id,page_number)).fetchone()
+        if row:
+            context=f'课件《{doc["filename"]}》第 {page_number} 页完整原文：\n{row["source"]}\n\n本页已有讲解：\n{row["markdown"]}'
+    elif scope_ids:
+        parts=[]
+        for selected in scope_ids:
+            entry=study_ai._document(selected)
+            path=FILES_DIR/str(selected)/'analysis.md'
+            text=path.read_text(encoding='utf-8') if path.is_file() else '\n'.join(study_ai._sources(entry))
+            parts.append(f'课件《{entry["filename"]}》：\n{text[:12000]}')
+        context='\n\n'.join(parts)[:60000]
     sys_prompt = (
         "你是西交利物浦大学（XJTLU）的智能课程助教。请用简体中文回答学生问题，"
         "专业术语首次出现时保留英文原文；回答结构清晰，适合复习。"
@@ -354,13 +410,15 @@ async def chat_api(body: dict):
     if context:
         sys_prompt += f"\n\n以下是课件内容摘录，供你参考：\n{context}"
 
-    messages = [{"role": "system", "content": sys_prompt}] + history[-16:]
+    history=[{'role':m.get('role'),'content':str(m.get('content',''))[:20000]} for m in history[-16:] if isinstance(m,dict) and m.get('role') in ('user','assistant')]
+    messages = [{"role": "system", "content": sys_prompt}] + history
     last_user = next((m.get("content", "") for m in reversed(history) if m.get("role") == "user"), "")
 
     def gen():
         full = ""
         try:
-            for chunk in llm.chat_stream(cfg["api_base"], cfg["api_key"], cfg["model"], messages):
+            for chunk in llm.chat_stream(cfg["api_base"], cfg["api_key"], cfg["model"], messages,
+                                         extra=study_ai.model_extras(cfg),max_tokens=5000):
                 full += chunk
                 yield chunk
         except llm.LLMError as e:
@@ -371,19 +429,23 @@ async def chat_api(body: dict):
             if full.strip():
                 with db() as c:
                     if last_user:
-                        c.execute("INSERT INTO chat_messages(course_id, document_id, role, content) "
-                                  "VALUES(?, ?, 'user', ?)", (course_id, document_id, last_user))
-                    c.execute("INSERT INTO chat_messages(course_id, document_id, role, content) "
-                              "VALUES(?, ?, 'assistant', ?)", (course_id, document_id, full))
+                        c.execute("INSERT INTO chat_messages(course_id, document_id, role, content,page_number,scope_key) "
+                                  "VALUES(?, ?, 'user', ?,?,?)", (course_id, document_id, last_user,page_number,scope_key))
+                    c.execute("INSERT INTO chat_messages(course_id, document_id, role, content,page_number,scope_key) "
+                              "VALUES(?, ?, 'assistant', ?,?,?)", (course_id, document_id, full,page_number,scope_key))
 
     return StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
 
 
 @app.get("/api/chat/history")
-def chat_history(course_id: int):
+def chat_history(course_id: int,document_id:int=-1,page_number:int=-1,scope_key:str=''):
     with db() as c:
-        rows = c.execute("SELECT role, content, created_at FROM chat_messages "
-                         "WHERE course_id=? ORDER BY id ASC LIMIT 100", (course_id,)).fetchall()
+        query='SELECT id,role,content,created_at,document_id,page_number,scope_key FROM chat_messages WHERE course_id=?'
+        params=[course_id]
+        if document_id>=0:query+=' AND document_id=?';params.append(document_id)
+        if page_number>=0:query+=' AND page_number=?';params.append(page_number)
+        if scope_key:query+=' AND scope_key=?';params.append(scope_key)
+        rows=c.execute('SELECT * FROM ('+query+' ORDER BY id DESC LIMIT 100) ORDER BY id',params).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -519,4 +581,26 @@ def summary_pdf(course_id: int):
 
 
 # ================= 静态前端（放在最后挂载） =================
+@app.post('/api/demo/v1/chat/completions')
+def desktop_demo(body: dict):
+    if os.environ.get('COURSEMATE_DESKTOP') != '1':
+        raise HTTPException(404, '仅桌面版提供内置演示')
+    text=demo_model.reply(body.get('messages',[]))
+    if body.get('stream'):
+        return StreamingResponse(demo_model.chunks(text),media_type='text/event-stream')
+    return {'choices':[{'message':{'role':'assistant','content':text}}]}
+
+
+@app.get('/api/desktop/status')
+def desktop_status():
+    if os.environ.get('COURSEMATE_DESKTOP') != '1':
+        raise HTTPException(404, '仅桌面版提供此功能')
+    with db() as c:
+        active=c.execute("SELECT COUNT(*) FROM documents WHERE status IN ('extracting','translating') OR analysis_status='running'").fetchone()[0]
+        study=c.execute("SELECT COUNT(*) FROM study_pages WHERE status IN ('pending','running')").fetchone()[0]
+        study+=c.execute("SELECT COUNT(*) FROM study_overviews WHERE status IN ('pending','running')").fetchone()[0]
+    return {'active_jobs':active+study,'study_jobs':study}
+
+
+app.include_router(study_ai.router)
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

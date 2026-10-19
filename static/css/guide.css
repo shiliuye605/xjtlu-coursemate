@@ -1,0 +1,52 @@
+/* In-app illustrated help. All screenshots and styles are shipped locally. */
+.topbar-actions{display:flex;align-items:center;gap:12px;margin-left:auto;flex-shrink:0}
+#topbar .topbar-actions .chip{margin-left:0}
+.guide-entry{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:8px 13px;background:#fff;border:1px solid #DED8F4;border-radius:10px;color:var(--primary);font:600 12px var(--font);cursor:pointer;white-space:nowrap;transition:background .15s,border-color .15s}
+.guide-entry:hover{background:#F5F2FF;border-color:var(--accent)}
+.guide-entry:focus-visible,.cm-guide button:focus-visible,.cm-guide-zoom button:focus-visible{outline:3px solid #9C7BFF;outline-offset:3px}
+.cm-guide,.cm-guide-zoom{margin:auto;padding:0;color:var(--text);background:#fff;border:1px solid var(--line);border-radius:20px;box-shadow:0 24px 90px #17234a35;overflow:hidden}
+.cm-guide{width:min(1240px,calc(100vw - 56px));height:min(900px,calc(100dvh - 56px));max-width:none;max-height:none}
+.cm-guide::backdrop,.cm-guide-zoom::backdrop{background:#18204480;backdrop-filter:blur(3px)}
+.cm-guide[open]{display:flex;flex-direction:column}
+.cm-guide-head{padding:20px 26px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:16px;flex-shrink:0}
+.cm-guide-head h2{font-size:21px;color:var(--primary);line-height:1.5}
+.cm-guide-head p{margin-top:3px;color:var(--muted);font-size:12px;line-height:1.6}
+.cm-guide-close{display:flex;align-items:center;justify-content:center;flex-shrink:0;width:34px;height:34px;border:1px solid var(--line);border-radius:10px;background:#fff;font-size:24px;color:var(--muted);cursor:pointer}
+.cm-guide-close:hover{background:#F4F1FF;color:var(--primary)}
+.cm-guide-layout{display:grid;grid-template-columns:198px minmax(0,1fr);min-height:0;flex:1}
+.cm-guide-nav{background:#FAFAFE;border-right:1px solid var(--line);padding:18px 12px;overflow:auto}
+.cm-guide-nav-label{display:block;font-size:10px;color:var(--muted);letter-spacing:1px;margin:0 12px 10px}
+.cm-guide-nav button{width:100%;display:flex;align-items:center;gap:10px;text-align:left;border:1px solid transparent;border-radius:10px;background:none;padding:11px 12px;margin-bottom:4px;cursor:pointer;font:500 13px var(--font);color:#5F6580;white-space:nowrap}
+.cm-guide-nav button span{font:600 11px var(--font);opacity:.65}
+.cm-guide-nav button:hover{background:#F0EDFC;color:var(--primary)}
+.cm-guide-nav button[aria-current="step"]{background:#EEEAFC;border-color:#DDD5F7;color:var(--primary);font-weight:700}
+.cm-guide-body{overflow:auto;overscroll-behavior:contain;padding:26px 30px;min-width:0;scrollbar-gutter:stable}
+.cm-guide-kicker{display:inline-block;padding:5px 10px;border-radius:99px;background:#F0ECFF;color:#6850BE;font-weight:600;font-size:11px;margin-bottom:10px}
+.cm-guide-body h3{color:var(--primary);font-size:25px;line-height:1.5;margin-bottom:8px}
+.cm-guide-intro{font-size:14px;line-height:1.9;color:#626A85;margin-bottom:16px}
+.cm-guide-note{padding:11px 14px;background:#F7F5FF;border:1px solid #E7E0FC;border-radius:10px;color:#62577F;font-size:12px;line-height:1.8;margin:14px 0}
+.cm-guide-figure{margin:18px 0;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#F4F5FA}
+.cm-guide-image-button{display:block;width:100%;border:0;background:transparent;cursor:zoom-in;padding:0}
+.cm-guide-image-button img{display:block;width:100%;height:auto;aspect-ratio:1400/660;object-fit:contain}
+.cm-guide-figure figcaption{padding:9px 13px;background:#fff;color:var(--muted);font-size:11px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}
+.cm-guide-figure figcaption span:last-child{color:var(--accent);white-space:nowrap}
+.cm-guide-steps{list-style:none;display:grid;gap:12px;margin:20px 0}
+.cm-guide-steps li{display:flex;gap:12px;align-items:flex-start;font-size:13px;line-height:1.8;color:#5F6680}
+.cm-guide-steps .step-number{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:25px;height:25px;border-radius:8px;background:#EFEBFC;color:#6951B9;font:700 12px var(--font)}
+.cm-guide-steps strong{display:block;color:#303958;font-size:13px}
+.cm-guide-pager{border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:10px;padding-top:20px;margin-top:26px}
+.cm-guide-counter{font-size:11px;color:var(--muted)}
+.cm-guide-pager button{padding:8px 13px;font-size:12px}
+.cm-guide-faq{display:grid;gap:12px;margin:20px 0}
+.cm-guide-faq div{padding:16px 18px;background:#FAFAFE;border:1px solid var(--line);border-radius:12px}
+.cm-guide-faq h4{font-size:14px;color:var(--primary);margin-bottom:6px}
+.cm-guide-faq p{font-size:13px;line-height:1.9;color:#626A85}
+.cm-guide-zoom{width:calc(100vw - 32px);height:calc(100dvh - 32px);max-width:none;max-height:none}
+.cm-guide-zoom[open]{display:flex;flex-direction:column}
+.cm-guide-zoom .cm-guide-head{padding:12px 20px}
+.cm-guide-zoom .cm-guide-head h2{font-size:16px}
+.cm-guide-zoom-scroll{overflow:auto;flex:1;min-height:0;background:#F4F5FA;overscroll-behavior:contain}
+.cm-guide-zoom img{display:block;width:max(100%,1400px);max-width:none;height:auto}
+@media(max-width:1280px){#topbar{gap:14px}.brand{min-width:0}.brand-text span{display:none}.topbar-actions{gap:8px}.tab{padding-left:14px;padding-right:14px}}
+@media(max-width:1080px){#topbar{padding-left:16px;padding-right:16px;gap:10px}.tab{padding-left:12px;padding-right:12px}.chip{font-size:11px;padding-left:10px;padding-right:10px}.guide-entry{padding-left:10px;padding-right:10px}}
+@media(max-width:760px){.cm-guide{width:calc(100vw - 20px);height:calc(100dvh - 20px);border-radius:14px}.cm-guide-head{padding:14px 16px}.cm-guide-head h2{font-size:18px}.cm-guide-layout{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.cm-guide-nav{display:flex;gap:5px;padding:8px;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line)}.cm-guide-nav-label{display:none}.cm-guide-nav button{width:auto;margin:0;padding:8px 11px}.cm-guide-body{padding:20px 18px}.cm-guide-body h3{font-size:22px}.cm-guide-counter{display:none}}

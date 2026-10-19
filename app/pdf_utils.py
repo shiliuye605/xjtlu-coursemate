@@ -1,7 +1,7 @@
 """PDF 引擎：文本块抽取、译制版 PDF 排版、课程总结 PDF 生成。
 
 核心思路（"保留原始排版的对照翻译"）：
-1. 用 PyMuPDF 按文本块（block）抽取原文及其位置、字号、颜色；
+    1. 规范化页面旋转后，按文本块抽取原文及其位置、字号、颜色；
 2. 把文本块交给 LLM 翻译（在 translate_service 中完成，带缓存）；
 3. 用 redaction 移除原文字但保留图片/图形（images=PDF_REDACT_IMAGE_NONE），
    再在原始位置写回中文，字号自动收缩以适配原文本框 —— 版式、图表得以保留。
@@ -10,6 +10,7 @@
 并实现逐字断行（wrap_text），解决 CJK 无空格导致的溢出问题。
 """
 import datetime
+import math
 import re
 
 import fitz  # PyMuPDF
@@ -35,37 +36,158 @@ def _rgb(color_int) -> tuple:
 
 
 # ---------------- 抽取 ----------------
+def _line_style(line):
+    spans = [s for s in line.get('spans', []) if s.get('text', '').strip()]
+    if not spans:
+        return 11, 0, False
+    total = sum(len(s['text']) for s in spans)
+    size = sum(s.get('size', 11) * len(s['text']) for s in spans) / max(1, total)
+    bold = sum(len(s['text']) for s in spans if s.get('flags', 0) & 16) > total / 2
+    return size, spans[0].get('color', 0), bold
+
+
+def _horizontal_rules(drawings):
+    rules = []
+    for drawing in drawings:
+        for item in drawing.get('items', []):
+            if item[0] == 'l' and abs(item[1].y-item[2].y) < .5:
+                rules.append((min(item[1].x,item[2].x),max(item[1].x,item[2].x),item[1].y))
+            elif item[0] == 're':
+                r = fitz.Rect(item[1])
+                rules.extend([(r.x0,r.x1,r.y0),(r.x0,r.x1,r.y1)])
+    return rules
+
+
+def _separated_by_rule(a, b, rules):
+    return any(a.y1 < y < b.y0 and x0 <= min(a.x0,b.x0)+1 and x1 >= min(a.x1,b.x1)-1 for x0,x1,y in rules)
+
+
+def _line_groups(lines, rules=()):
+    """Keep paragraphs together, but split table cells and different colors.
+
+    MuPDF can put an entire table, or a whole row of diagram labels, into one
+    block. Treating that as one text box destroys columns and text contrast.
+    """
+    inline, index = [], 0
+    while index < len(lines):
+        line = lines[index]
+        text = ''.join(s.get('text', '') for s in line.get('spans', [])).strip()
+        if text in {'•', '·', '▪', '-'} and index + 1 < len(lines):
+            following = lines[index + 1]
+            a, b = fitz.Rect(line['bbox']), fitz.Rect(following['bbox'])
+            size, _, _ = _line_style(following)
+            if (abs((a.y0+a.y1-b.y0-b.y1)/2) < .5*size
+                    and 0 <= b.x0-a.x1 < 2*size):
+                bullet = {**line['spans'][0], 'text':text+' '}
+                line = {**following, 'bbox':list(a|b), 'spans':[bullet, *following['spans']]}
+                index += 1
+        inline.append(line)
+        index += 1
+    groups = []
+    for line in inline:
+        text = ''.join(s.get('text', '') for s in line.get('spans', []))
+        if not text.strip():
+            continue
+        rect = fitz.Rect(line['bbox'])
+        size, color, bold = _line_style(line)
+        join = False
+        if groups:
+            prev = groups[-1][-1]
+            prev_rect = fitz.Rect(prev['bbox'])
+            prev_size, prev_color, prev_bold = _line_style(prev)
+            gap = rect.y0 - prev_rect.y1
+            join = (line.get('dir', (1, 0)) == prev.get('dir', (1, 0)) == (1, 0)
+                    and (color == prev_color or (color != 0xFFFFFF and prev_color != 0xFFFFFF))
+                    and bold == prev_bold
+                    and abs(size - prev_size) < 1
+                    and not _separated_by_rule(prev_rect, rect, rules)
+                    and -.4 * size <= gap <= .9 * size
+                    and abs(rect.x0 - prev_rect.x0) <= 1.5 * size)
+        if join:
+            groups[-1].append(line)
+        else:
+            groups.append([line])
+    return groups
+
+
 def extract_blocks(doc) -> list:
-    """返回每页的文本块列表：[{bbox, text, size, color}, ...]"""
+    """Extract coherent paragraphs/cells after normalize_page_rotations()."""
     pages = []
     for page in doc:
-        data = page.get_text("dict")
+        data = page.get_text('dict', flags=fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES)
+        rules = _horizontal_rules(page.get_drawings())
         blocks = []
-        for b in data.get("blocks", []):
-            if b.get("type") != 0:
+        for block in data.get('blocks', []):
+            if block.get('type') != 0:
                 continue
-            lines, sizes, color = [], [], 0
-            for line in b.get("lines", []):
-                lt = "".join(s.get("text", "") for s in line.get("spans", []))
-                if not lt.strip():
-                    continue
-                lines.append(lt)
-                for s in line.get("spans", []):
-                    sizes.append(s.get("size", 11))
-                    if s.get("text", "").strip() and not color:
-                        color = s.get("color", 0)
-            text = "\n".join(lines).strip()
-            if not text:
-                continue
-            avg = sum(sizes) / len(sizes) if sizes else 11
-            blocks.append({
-                "bbox": list(b["bbox"]),
-                "text": text,
-                "size": max(4.5, min(30, avg)),
-                "color": color,
-            })
-        pages.append(blocks)
+            for group in _line_groups(block.get('lines', []), rules):
+                text = '\n'.join(''.join(s.get('text', '') for s in line['spans']) for line in group).strip()
+                rect = fitz.Rect(group[0]['bbox'])
+                for line in group[1:]:
+                    rect |= fitz.Rect(line['bbox'])
+                rect *= page.rotation_matrix
+                size, color, bold = _line_style(group[0])
+                direction = group[0].get('dir', (1, 0))
+                angle = (round(math.degrees(math.atan2(-direction[1], direction[0])) / 90) * 90 - page.rotation) % 360
+                centered = (len(group) == 1 and angle == 0
+                            and abs((rect.x0 + rect.x1) / 2 - page.rect.width / 2) < 12
+                            and rect.width > page.rect.width * .25)
+                blocks.append({'bbox': list(rect), 'text': text, 'size': max(4.5, min(96, size)),
+                               'color': color, 'bold': bold, 'rotate': angle,
+                               'align': 'center' if centered else 'left'})
+        pages.append(_merge_container_blocks(page, blocks))
     return pages
+
+
+def _merge_container_blocks(page, blocks):
+    """Rejoin fragmented sentences inside one diagram cell, never across cells."""
+    drawings = page.get_drawings()
+    shapes = [fitz.Rect(d['rect']) for d in drawings
+              if d.get('fill') is not None and 0 < fitz.Rect(d['rect']).get_area() < page.rect.get_area()*.2]
+    rules = _horizontal_rules(drawings)
+    def container(block):
+        box=fitz.Rect(block['bbox'])
+        choices=[(r.get_area(),i) for i,r in enumerate(shapes) if (r+(-1,-1,1,1)).contains(box)]
+        return min(choices)[1] if choices else None
+    containers=[container(b) for b in blocks]
+    removed=set()
+    for i in sorted(range(len(blocks)),key=lambda j:(blocks[j]['bbox'][1],blocks[j]['bbox'][0])):
+        if i in removed:continue
+        a=blocks[i]
+        for j in sorted(range(len(blocks)),key=lambda k:blocks[k]['bbox'][1]):
+            if j==i or j in removed or containers[j]!=containers[i]:continue
+            b=blocks[j];ra,rb=fitz.Rect(a['bbox']),fitz.Rect(b['bbox']);size=a['size']
+            gap=rb.y0-ra.y1
+            colored_continuation=(a['color']!=b['color'] and a['color']!=0xFFFFFF and b['color']!=0xFFFFFF)
+            # PowerPoint can place the last line of a paragraph in a separate
+            # text object. A lowercase continuation with a short line gap is
+            # safe to rejoin; bullets, headings and finished sentences stay apart.
+            separated=_separated_by_rule(ra,rb,rules)
+            paragraph_continuation=(len(a['text']) >= 80 and a['color']==b['color'] and not separated
+                                    and not a['text'].rstrip().endswith(('.', '?', '!', ':', ';', '。', '？', '！', '：', '；'))
+                                    and re.match(r'^[a-z]', b['text'].lstrip()) is not None
+                                    and not re.match(r'^[●•▪·\-*]', a['text'].lstrip()))
+            if containers[i] is None and not (colored_continuation or paragraph_continuation):continue
+            same_style=((a['color']==b['color'] or colored_continuation)
+                        and (a['bold']==b['bold'] or paragraph_continuation)
+                        and abs(size-b['size'])<.6)
+            aligned=(abs(ra.x0-rb.x0)<=1.5*size or abs(ra.x0+ra.x1-rb.x0-rb.x1)<size)
+            if a['rotate']==b['rotate']==0 and same_style and aligned and -.4*size<=gap<=1.2*size:
+                a={**a,'bbox':list(ra|rb),'text':a['text']+'\n'+b['text']}
+                blocks[i]=a;removed.add(j)
+    return [b for i,b in enumerate(blocks) if i not in removed]
+
+
+def normalize_page_rotations(doc):
+    """Bake page rotation into its content without changing visible appearance.
+
+    PowerPoint PDFs often combine /Rotate=90 with counter-rotated text. Writing
+    into those tall, narrow unrotated boxes rotates and shrinks Chinese text.
+    This modifies only the in-memory working document, never the uploaded file.
+    """
+    for page in doc:
+        if page.rotation:
+            page.remove_rotation()
 
 
 def extract_doc_text(path) -> str:
@@ -120,8 +242,10 @@ def apply_page_translation(page, blocks: list, translations: list):
     使用 insert_htmlbox：自动处理 CJK 断行，空间不足时按比例缩放字号，
     保证译文完整落在原文本块区域内。
     """
+    if len(blocks) != len(translations):
+        raise ValueError("译文数量与原文文本框数量不一致")
     pairs = [(b, t) for b, t in zip(blocks, translations)
-             if t and t.strip() and b["text"].strip()]
+             if t and t.strip() and b["text"].strip() and t != b["text"]]
     if not pairs:
         return
     for b, _ in pairs:
@@ -130,25 +254,26 @@ def apply_page_translation(page, blocks: list, translations: list):
         except TypeError:
             page.add_redact_annot(fitz.Rect(b["bbox"]))
     try:
-        page.apply_redactions(images=getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0))
+        page.apply_redactions(images=0, graphics=0)
     except TypeError:
         page.apply_redactions()
     for b, zh in pairs:
         rect = fitz.Rect(b["bbox"])
         # 轻微外扩，避免贴边裁切；标题块向下多留一点行高余量
-        rect = fitz.Rect(max(0, rect.x0 - 1.5), max(0, rect.y0 - 1.5),
-                         min(page.rect.x1, rect.x1 + 2),
-                         min(page.rect.y1, rect.y1 + max(3, b["size"] * 0.45)))
+        rect = fitz.Rect(max(0, rect.x0 - .5), max(0, rect.y0 - .5),
+                         min(page.rect.x1, rect.x1 + .5),
+                         min(page.rect.y1, rect.y1 + .5))
         r, g, b_ch = _rgb(b["color"])
         hex_color = f"#{int(r*255):02x}{int(g*255):02x}{int(b_ch*255):02x}"
-        html = (f'<div style="font-family:sans-serif;'
+        html = (f'<div style="font-family:sans-serif;margin:0;padding:0;'
                 f'font-size:{b["size"]:.1f}px;color:{hex_color};'
-                f'line-height:1.25">'
+                f'font-weight:{"bold" if b.get("bold") else "normal"};'
+                f'text-align:{b.get("align", "left")};line-height:1.1">'
                 + esc_html(zh).replace("\n", "<br>") + "</div>")
-        try:
-            page.insert_htmlbox(rect, html, scale_low=0)
-        except Exception:
-            pass  # 单块失败不影响整页
+        spare, scale = page.insert_htmlbox(rect, html, css="* {margin:0; padding:0;}",
+                                           rotate=b.get("rotate", 0), scale_low=0)
+        if spare < 0:
+            raise ValueError(f"第 {page.number + 1} 页译文排版失败，请重试")
 
 
 def esc_html(s: str) -> str:

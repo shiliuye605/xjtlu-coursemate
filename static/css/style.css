@@ -240,7 +240,7 @@ em{font-style:normal}
 /* ---------- 设置 ---------- */
 .settings-grid{display:grid;grid-template-columns:1.25fr 1fr;gap:16px;max-width:1050px}
 .field-label{display:block;font-size:12px;font-weight:700;color:#4A4F6A;margin:16px 0 6px}
-#tab-settings input{width:100%;padding:10px 12px;border:1px solid var(--line);
+#tab-settings input,#tab-settings select{width:100%;padding:10px 12px;border:1px solid var(--line);
   border-radius:10px;outline:none;transition:.15s;background:#fff}
 #tab-settings input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(124,92,232,.12)}
 .key-row{display:flex;gap:8px}
@@ -282,6 +282,32 @@ em{font-style:normal}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}
 
 /* ---------- 响应式 ---------- */
+/* ---------- 拖拽上传 ---------- */
+.upload-modal{width:min(620px,calc(100vw - 32px));max-height:calc(100vh - 40px);padding:0;
+  margin:auto;border:1px solid #E5E6F1;border-radius:20px;background:#fff;color:var(--text);
+  box-shadow:0 24px 90px rgba(24,29,73,.24);overflow:auto}
+.upload-modal::backdrop{background:rgba(30,34,60,.44);backdrop-filter:blur(2px)}
+.upload-head{display:flex;justify-content:space-between;align-items:flex-start;padding:26px 28px 22px}
+.upload-head h2{font-size:23px;color:var(--primary);margin:0 0 7px}
+.upload-head p{font-size:13px;color:var(--muted);margin:0}
+.upload-head .icon-btn{font-size:25px;line-height:1;margin-top:-3px}
+.upload-zone{margin:0 28px 24px;border:2px dashed #A99AEE;border-radius:16px;
+  background:linear-gradient(135deg,#F7F5FF,#F2F3FC);text-align:center;padding:32px 18px 26px;
+  transition:background .15s,border-color .15s,box-shadow .15s;cursor:pointer}
+.upload-zone.drag-over{border-color:var(--accent);background:#EDE8FF;box-shadow:0 0 0 4px rgba(124,92,232,.12)}
+.upload-symbol{width:88px;height:88px;display:grid;place-items:center;margin:0 auto 20px;
+  border-radius:50%;background:#E9E4FF;color:#4D3AC6}
+.upload-zone h3{font-size:23px;color:var(--primary);margin:0 0 10px;overflow-wrap:anywhere}
+.upload-zone>p{font-size:13px;color:var(--muted);margin:0 0 22px}
+.upload-zone #upload-choose{min-width:180px;justify-content:center;padding:12px 24px;font-size:14px}
+.upload-zone .upload-limit{font-size:12px;margin:17px 0 0}
+.upload-footer{border-top:1px solid var(--line);padding:16px 22px;display:flex;justify-content:flex-end}
+.upload-error{color:var(--danger);font-size:13px;margin:-8px 28px 20px;overflow-wrap:anywhere}
+.upload-modal[aria-busy="true"] .upload-zone{cursor:wait;opacity:.75}
+.upload-modal button:focus-visible{outline:3px solid #A99AEE;outline-offset:3px}
+@media(max-width:520px){.upload-head{padding:22px 20px 18px}.upload-zone{margin:0 20px 20px;padding:26px 12px}
+  .upload-zone h3{font-size:20px}.upload-error{margin-left:20px;margin-right:20px}}
+
 @media (max-width:1080px){
   .brand-text span{display:none}
   #sidebar{width:200px}

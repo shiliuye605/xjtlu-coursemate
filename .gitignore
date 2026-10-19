@@ -1,6 +1,7 @@
-# 私人运行数据：Key / 数据库 / 上传课件 / 生成结果
+# Private local runtime data and credentials
 data/
 .venv/
+.openai/
 __pycache__/
 *.py[cod]
 *.db
@@ -14,3 +15,13 @@ __pycache__/
 node_modules/
 .DS_Store
 Thumbs.db
+# Build outputs and packaged binaries are distributed through Releases
+build-output/
+build-temp/
+dist/
+build/
+*.spec
+*.exe
+*.zip
+windows-version.txt
+build-result.json
